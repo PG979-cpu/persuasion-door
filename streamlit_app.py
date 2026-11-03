@@ -23,6 +23,8 @@ st.set_page_config(page_title="설득의 문", page_icon="🚪", layout="wide", 
 # 1. 기본 설정
 # ═════════════════════════════════════════════
 MAX_TURNS = 5
+# 한 턴 최대 20점(4항목×5점)을 25점으로 환산 → 5턴 만점 125점, 100점 넘기면 성공
+SCORE_SCALE = 1.25
 MOODS = ["단호함", "고민", "수긍"]
 MOOD_ICON = {"단호함": "🛡️", "고민": "❓", "수긍": "🤝"}
 TONES = ["자신감", "정중함", "위축", "공격적", "과도한 사과"]
@@ -67,9 +69,9 @@ STAGES = {
             "준비성": ("자료 정리, 넉넉한 일정 등 교수님의 부담을 줄이는 준비를 했는가", 1),
             "예의": ("정중하고 예의 바른가. 과한 아부나 무례함은 감점", 1),
         },
-        "goal_score": 80,
+        "goal_score": 100,
         "examples": [
-            ("교수님, 지난 학기 데이터분석 수업 기말 프로젝트에서 서울시 따릉이 데이터를 분석해 A+를 받았던 박가현입니다. "
+            ("교수님, 지난 학기 데이터분석 수업 기말 프로젝트에서 서울시 따릉이 데이터를 분석해 A+를 받은 학생입니다. "
              "이번에 데이터 기반 서비스 기획 인턴에 지원하는데, 그 프로젝트 경험을 바탕으로 추천서를 부탁드려도 될까요? "
              "프로젝트 요약과 이력서를 정리해서 메일로 보내드리고, 마감은 3주 뒤입니다.",
              {"구체적 근거": 5, "연결성": 5, "준비성": 5, "예의": 5}),
@@ -114,7 +116,7 @@ STAGES = {
             "객관적 근거": ("일정, 심사 기준 등 객관적인 근거를 들었는가", 1),
             "감정 조절": ("차분하게 말했는가. 비난·비꼼·밀어붙이기는 감점", 1),
         },
-        "goal_score": 80,
+        "goal_score": 100,
         "examples": [
             ("지난 회의 때 네 아이디어 제대로 못 들은 건 미안해. AR 투어는 진짜 참신해. 근데 심사 기준에 실현 가능성이 30%라서, "
              "빈 강의실 찾기를 메인으로 하고 네 AR 길안내를 핵심 기능으로 넣으면 어때?",
@@ -138,8 +140,8 @@ STAGES = {
         "skill": "책임감 있게 나쁜 소식 전하기",
         "character": "선배",
         "situation": (
-            "사용자는 동아리 행사 담당이다. 행사 장소(강의실) 예약을 깜빡해서, "
-            "행사 1주일 전에 장소가 없다는 걸 알게 됐다. 지금 이 사실을 선배에게 직접 말하러 왔다."
+            "사용자는 코딩 동아리의 '신입 부원 환영 해커톤' 행사 담당이다. 행사 장소(공학관 대강의실) 예약을 깜빡해서, "
+            "행사 1주일 전에 다른 단체가 이미 예약했다는 걸 알게 됐다. 지금 이 사실을 동아리 회장인 선배에게 직접 말하러 왔다."
         ),
         "goal": "선배가 사용자의 해결 방안을 받아들이고, 행사 담당을 계속 사용자에게 맡기기로 하는 것",
         "persona": "평소에는 다정하지만 일에는 엄격한 동아리 선배. 반존대(편한 반말에 가끔 존댓말 섞음)를 쓴다.",
@@ -158,7 +160,7 @@ STAGES = {
             "해결 방안": ("대안 장소, 일정, 비용 등 구체적인 해결책을 제시했는가", 1),
             "태도": ("차분하고 간결한가. 사과만 반복하거나 지나치게 자책하면 감점", 1),
         },
-        "goal_score": 80,
+        "goal_score": 100,
         "examples": [
             ("선배, 제가 행사 장소 예약을 놓쳤어요. 제 확인 실수예요. 대안으로 학생회관 세미나실이랑 도서관 스터디룸 두 곳 알아왔어요.",
              {"솔직함": 5, "책임 인정": 5, "해결 방안": 5, "태도": 5}),
@@ -181,8 +183,8 @@ STAGES = {
         "skill": "나를 어필하기",
         "character": "면접관",
         "situation": (
-            "사용자는 IT 기업 '서비스 기획 인턴' 최종 면접에 들어왔다. 면접관은 기획팀 팀장이며, "
-            "대학생 지원자의 경험과 태도를 확인하려 한다."
+            "사용자는 대학생용 일정·모임 관리 앱 '모아(MOA)'를 운영하는 IT 스타트업의 '서비스 기획 인턴'(6주) 최종 면접에 들어왔다. "
+            "면접관은 기획팀 팀장이며, 대학생 지원자의 경험과 태도를 확인하려 한다."
         ),
         "goal": "면접관에게 '같이 일하고 싶은 지원자'라는 확신을 주는 것(합격)",
         "persona": "차분하지만 날카로운 기획팀 팀장. 정중한 존댓말을 쓰고, 짧게 반응한 뒤 다음 질문을 던진다. 압박 질문을 섞는다.",
@@ -204,7 +206,7 @@ STAGES = {
             "솔직함": ("단점·한계를 솔직하게 말하고 개선 노력까지 말했는가. 외운 듯한 답은 감점", 1),
             "직무 이해": ("회사와 서비스 기획 직무를 구체적으로 이해하고 연결했는가", 1),
         },
-        "goal_score": 80,
+        "goal_score": 100,
         "examples": [
             ("공모전에서 팀원과 아이디어 충돌이 있었을 때, 두 안의 장점을 합친 절충안을 내서 마감 안에 서비스를 완성했습니다. "
              "그 과정에서 사용자 문제를 먼저 정의하는 게 기획의 시작이라는 걸 배웠고, 귀사의 사용자 리서치 문화에서 그걸 더 키우고 싶습니다.",
@@ -224,6 +226,85 @@ STAGES = {
                  "outfit": "blazer", "outfit_color": "#2b2d42", "glasses": False},
     },
 }
+
+# ═════════════════════════════════════════════
+# 2-1. 대화 전에 보여줄 상황 설명 (브리핑)
+#      여기 적힌 '나의 정보'는 캐릭터·심판에게도 똑같이 전달돼요.
+# ═════════════════════════════════════════════
+BRIEFS = {
+    "stage1": {
+        "headline": "인턴 지원서에 필요한 추천서, 교수님께 부탁해야 해요",
+        "situation": [
+            "여름방학 IT 기업 <b>'데이터 기반 서비스 기획' 인턴</b>에 지원하려고 해요.",
+            "지원서에 <b>교수 추천서 1부</b>가 필요하고, 마감은 <b>3주 뒤</b>예요.",
+            "지난 학기 수업을 들었던 교수님 연구실에 찾아왔어요.",
+        ],
+        "me": [
+            "지난 학기 <b>'데이터분석'</b> 수업 수강, 성적 <b>A+</b>",
+            "기말 프로젝트: <b>서울시 따릉이 이용 데이터 분석 → 대여소 재배치 제안</b> (팀장, 발표 1위)",
+            "준비할 수 있는 자료: 이력서, 프로젝트 요약 1장",
+        ],
+        "opponent": "데이터분석 수업 담당 교수님. 깐깐하지만 공정해요. 개인적으로 대화해 본 적은 거의 없어요.",
+        "tip": "교수님은 근거 없는 칭찬을 싫어해요. 무엇을 써 줄 수 있을지 떠올리게 해 주세요.",
+    },
+    "stage2": {
+        "headline": "공모전 마감 2주 전, 팀 방향을 다시 정해야 해요",
+        "situation": [
+            "교내 <b>'캠퍼스 생활 개선 아이디어 공모전'</b>을 4명이 한 팀으로 준비 중이에요. 마감은 <b>2주 뒤</b>예요.",
+            "심사 기준: <b>창의성 30 · 실현 가능성 30 · 사용자 가치 40</b>",
+            "팀원은 <b>'AR 캠퍼스 투어 앱'</b>을 고집하고, 나와 다른 팀원들은 <b>'빈 강의실 찾기 서비스'</b>가 낫다고 생각해요.",
+            "지난 회의 때 시간에 쫓겨 팀원의 아이디어를 제대로 듣지 못하고 넘어갔어요.",
+        ],
+        "me": [
+            "빈 강의실 찾기 서비스: 2주 안에 웹으로 구현 가능, 학생 설문에서 '빈 강의실 찾기 어렵다' 응답 72%",
+            "AR 투어 앱: 참신하지만 AR 개발 경험이 있는 팀원이 없음",
+        ],
+        "opponent": "열정 많고 고집 센 동기. 반말을 쓰고 감정이 잘 드러나요.",
+        "tip": "누가 맞는지 이기는 게 목표가 아니에요. 팀원이 왜 이렇게 날이 서 있는지 생각해 보세요.",
+    },
+    "stage3": {
+        "headline": "행사 1주일 전, 장소 예약을 놓친 걸 알게 됐어요",
+        "situation": [
+            "나는 코딩 동아리의 <b>'신입 부원 환영 해커톤'</b> 행사 담당이에요.",
+            "행사: <b>다음 주 금요일 오후 6시</b>, 참가자 <b>40명</b>",
+            "3주 전에 해야 했던 <b>공학관 대강의실 예약을 깜빡</b>했고, 오늘 확인해 보니 다른 단체가 이미 예약했어요.",
+        ],
+        "me": [
+            "급히 알아본 대안 ①: <b>학생회관 세미나실</b> (최대 35명, 무료, 금요일 저녁 가능)",
+            "급히 알아본 대안 ②: <b>도서관 그룹스터디룸 2개</b> (합쳐서 40명, 최대 4시간)",
+            "오늘 안에 신청하면 둘 중 하나는 예약할 수 있어요.",
+        ],
+        "opponent": "동아리 회장 선배. 평소엔 다정하지만 일에는 엄격하고, 요즘 다른 동아리 일로 바빠요.",
+        "tip": "사과만으로는 부족해요. 선배가 이 소식을 듣고 가장 걱정할 게 무엇일지 생각해 보세요.",
+    },
+    "stage4": {
+        "headline": "드디어 최종 면접이에요",
+        "situation": [
+            "대학생용 일정·모임 관리 앱 <b>'모아(MOA)'</b>를 운영하는 IT 스타트업이에요.",
+            "지원 직무: <b>서비스 기획 인턴</b> (6주)",
+            "최종 1:1 면접, 면접관은 <b>기획팀 팀장</b>이에요. 면접관이 질문하고 내가 답해요.",
+        ],
+        "me": [
+            "데이터분석 수업 프로젝트: 따릉이 데이터 분석 → 대여소 재배치 제안 (팀장)",
+            "공모전에서 팀원과 아이디어가 부딪혔을 때 절충안을 내서 마감 안에 완성",
+            "동아리 행사 장소 예약 실수 → 바로 보고하고 대안 장소로 수습",
+        ],
+        "opponent": "차분하지만 날카로운 기획팀 팀장. 압박 질문을 섞어요.",
+        "tip": "앞 스테이지에서 겪은 일들이 모두 면접 소재예요. 외운 답보다 경험을 이야기하세요.",
+    },
+}
+
+
+def strip_tags(t):
+    return re.sub(r"<[^>]+>", "", t)
+
+
+def stage_context(stage_id):
+    """캐릭터·심판에게 줄 상황 설명 (브리핑의 사실까지 포함)"""
+    stage, brief = STAGES[stage_id], BRIEFS[stage_id]
+    facts = "\n".join("- " + strip_tags(x) for x in brief["situation"] + brief["me"])
+    return f"{stage['situation']}\n[사용자 쪽 사실]\n{facts}"
+
 
 RESULT_BUBBLE = {
     "success": ("훌륭해요!", "상대의 속마음을 정확히 읽은 설득이었어요."),
@@ -305,12 +386,12 @@ def transcript(stage, history):
     return "\n".join(f"{who(h)}: {h['text']}" for h in history)
 
 
-def call_character(stage, history, user_msg, turn):
+def call_character(stage, history, user_msg, turn, ctx):
     """① 캐릭터: 대답 + 속마음 + 표정"""
     hidden = "\n- ".join(stage["hidden"])
     system = f"""너는 설득 연습 게임 속 캐릭터 '{stage['character']}'이다. 반드시 이 역할로만 대답한다.
 
-[상황] {stage['situation']}
+[상황] {ctx}
 [성격·말투] {stage['persona']}
 [숨은 속사정 — 절대 직접 말하지 말 것]
 - {hidden}
@@ -335,7 +416,7 @@ def call_character(stage, history, user_msg, turn):
     return out
 
 
-def call_judge(stage, history, user_msg):
+def call_judge(stage, history, user_msg, ctx):
     """② 심판: 항목별 점수 + 한 줄 평가 + 사용자 톤/전략"""
     crit = "\n".join(f"- {k}: {v[0]} (0~5점)" for k, v in stage["criteria"].items())
     shots = "\n".join(f"발언: {ex}\n점수: {json.dumps(sc, ensure_ascii=False)}" for ex, sc in stage["examples"])
@@ -343,7 +424,7 @@ def call_judge(stage, history, user_msg):
     tone_list, strategy_list = ", ".join(TONES), ", ".join(STRATEGIES)
     system = f"""너는 설득 연습 게임의 공정한 심판이다. 사용자의 '마지막 발언 하나'만 채점한다.
 
-[상황] {stage['situation']}
+[상황] {ctx}
 [사용자의 목표] {stage['goal']}
 
 [채점 기준]
@@ -374,7 +455,7 @@ def call_judge(stage, history, user_msg):
     return out
 
 
-def call_report(stage, game, result_label):
+def call_report(stage, game, result_label, ctx):
     """③ 리포트: 결정적 발언, 피드백, 한 줄 요약, 대화 성향, Before/After"""
     rec_text = "\n".join(
         f"{i+1}턴 | 사용자: {r['user']} | 점수 {r['turn_score']} | 톤 {r['tone']} | 전략 {r['strategy']} | 상대 표정 {r['mood']}"
@@ -391,7 +472,7 @@ def call_report(stage, game, result_label):
  "style_summary": "이번 대화에서 나타난 대화 성향 한두 문장",
  "before": "가장 아쉬웠던 사용자 발언(원문 그대로)",
  "after": "그 발언을 더 낫게 고친 예시"}"""
-    prompt = (f"[상황] {stage['situation']}\n[목표] {stage['goal']}\n[결과] {result_label}\n\n"
+    prompt = (f"[상황] {ctx}\n[목표] {stage['goal']}\n[결과] {result_label}\n\n"
               f"[대화]\n{transcript(stage, game['history'])}\n\n[턴별 기록]\n{rec_text}")
     return ask_gemini_json(system, prompt, temperature=0.4)
 
@@ -403,10 +484,10 @@ def now_hm():
     return datetime.now(KST).strftime("%H:%M")
 
 
-def new_game(stage_id):
+def new_game(stage_id, started=False):
     stage = STAGES[stage_id]
     return {
-        "stage_id": stage_id,
+        "stage_id": stage_id, "started": started,
         "history": [{"role": "character", "text": stage["first_line"], "time": now_hm(), "mood": "단호함"}],
         "records": [], "score": 0, "turn": 0,
         "mood": "단호함", "thought": "…", "done": False, "result": None, "report": None,
@@ -425,11 +506,12 @@ def judge_result(stage, score):
 def play_turn(game, user_msg):
     stage = STAGES[game["stage_id"]]
     turn = game["turn"] + 1
-    char = call_character(stage, game["history"], user_msg, turn)
-    judge = call_judge(stage, game["history"], user_msg)
+    ctx = stage_context(game["stage_id"])
+    char = call_character(stage, game["history"], user_msg, turn, ctx)
+    judge = call_judge(stage, game["history"], user_msg, ctx)
 
-    turn_score = sum(judge["scores"][k] * w for k, (_, w) in stage["criteria"].items())
-    game["score"] += turn_score
+    turn_score = round(sum(judge["scores"][k] * w for k, (_, w) in stage["criteria"].items()) * SCORE_SCALE)
+    game["score"] = min(stage["goal_score"], game["score"] + turn_score)
     game["turn"] = turn
     game["mood"] = char["mood"]
     game["thought"] = char.get("inner_thought", "…")
@@ -445,7 +527,7 @@ def play_turn(game, user_msg):
         game["done"] = True
         game["result"] = judge_result(stage, game["score"])
         try:
-            game["report"] = call_report(stage, game, stage["endings"][game["result"]][0])
+            game["report"] = call_report(stage, game, stage["endings"][game["result"]][0], ctx)
         except Exception as e:
             game["report"] = {"one_line": f"(리포트 생성 오류: {str(e)[:80]})"}
     return game
@@ -682,6 +764,23 @@ header[data-testid="stHeader"] { background: transparent; }
 .st-key-next button { border-radius:16px !important; background:#2b3a63 !important; color:#fff !important; border:none !important;
                       min-height:54px; font-weight:800 !important; }
 
+/* ── 상황 브리핑 ── */
+.brief { background:#fff; border:1px solid #e7e9f0; border-radius:20px; padding:26px 28px; box-shadow:0 4px 14px rgba(31,43,77,.06); }
+.brief .tag2 { display:inline-block; background:#2b3a63; color:#fff; border-radius:999px; padding:5px 14px; font-weight:800; font-size:13px; }
+.brief h2 { font-size:28px; font-weight:800; color:#24345c; margin:12px 0 4px; letter-spacing:-0.5px; }
+.brief .skill { color:#6b7189; margin-bottom:18px; }
+.bsec { background:#f6f7fb; border-radius:16px; padding:16px 18px; margin-bottom:12px; }
+.bsec .bt { font-weight:800; color:#24345c; font-size:17px; margin-bottom:8px; }
+.bsec ul { margin:0; padding-left:20px; color:#2b3346; line-height:1.75; font-size:15.5px; }
+.bsec p { margin:0; color:#2b3346; line-height:1.65; font-size:15.5px; }
+.bsec.goal { background:#fdf0dc; }
+.bsec.tip { background:#eef0f7; }
+.bgrid { display:flex; gap:12px; }
+.bgrid > .bsec { flex:1; }
+.st-key-start button { border-radius:16px !important; background:#2b3a63 !important; color:#fff !important; border:none !important;
+                       min-height:58px; font-weight:800 !important; }
+.st-key-start button p { font-size:18px !important; font-weight:800 !important; }
+
 /* ── 사이드바 ── */
 [data-testid="stSidebar"] { background:#ffffff; border-right:1px solid #e7e9f0; }
 .sb-title { font-size:24px; font-weight:800; color:#24345c; }
@@ -718,7 +817,7 @@ def character_card_html(game):
     return (f'<div class="char-card"><div class="char-art" style="background:{stage["look"]["bg"]}">{character_art(game["stage_id"], game["mood"], "meet")}'
             f'<div class="name-badge">{esc(stage["character"])}</div></div>'
             f'<div class="moods">{moods}</div>'
-            f'<div class="thought"><div class="t-title">💭 속마음</div><div class="t-body">{esc(game["thought"])}</div></div></div>')
+            f'<div class="thought"><div class="t-title">💭 속마음</div><div class="t-body">{esc(game["thought"]) if game.get("started") else "대화를 시작하면 속마음이 보여요."}</div></div></div>')
 
 
 def score_card_html(game):
@@ -816,6 +915,30 @@ def result_right_html(game):
 </div>"""
 
 
+
+def brief_html(stage_id):
+    stage, b = STAGES[stage_id], BRIEFS[stage_id]
+    num = STAGE_ORDER.index(stage_id) + 1
+    li = lambda xs: "".join(f"<li>{x}</li>" for x in xs)   # 브리핑 문구는 코드에 직접 쓴 내용이라 HTML 허용
+    first = "면접관이 먼저 질문해요." if stage_id == "stage4" else f"{esc(stage['character'])}의 첫마디로 대화가 시작돼요."
+    return f"""
+<div class="brief">
+  <span class="tag2">STAGE {num} · {esc(stage['title'])}</span>
+  <h2>{b['headline']}</h2>
+  <div class="skill">연습할 능력: <b>{esc(stage['skill'])}</b></div>
+  <div class="bsec"><div class="bt">🧭 지금 상황</div><ul>{li(b['situation'])}</ul></div>
+  <div class="bsec"><div class="bt">🙋 나에 대한 정보</div><ul>{li(b['me'])}</ul></div>
+  <div class="bgrid">
+    <div class="bsec"><div class="bt">👤 대화 상대</div><p>{b['opponent']}</p></div>
+    <div class="bsec goal"><div class="bt">🎯 목표</div><p>{esc(stage['goal']).replace('사용자', '나')}</p></div>
+  </div>
+  <div class="bgrid">
+    <div class="bsec"><div class="bt">📏 규칙</div><p>{MAX_TURNS}턴 안에 설득 점수 <b>{stage['goal_score']}점</b>을 채우면 성공!<br>{first}</p></div>
+    <div class="bsec tip"><div class="bt">💡 힌트</div><p>{b['tip']}</p></div>
+  </div>
+</div>"""
+
+
 # ═════════════════════════════════════════════
 # 9. 진행 상태 (잠금 해제)
 # ═════════════════════════════════════════════
@@ -836,10 +959,14 @@ def is_unlocked(sid):
     return RESULT_RANK.get(st.session_state.best.get(STAGE_ORDER[idx - 1]), -1) >= RESULT_RANK["partial"]
 
 
-def go_stage(sid):
+def go_stage(sid, started=False):
     st.session_state.current = sid
-    st.session_state.game = new_game(sid)
+    st.session_state.game = new_game(sid, started)
     st.session_state.error = None
+
+
+def start_talk():
+    st.session_state.game["started"] = True
 
 
 def record_best(game):
@@ -891,8 +1018,24 @@ def draw_topbar(game):
             key = f"tabon_{sid}" if sid == st.session_state.current else f"tab_{sid}"
             with cols[i + 1]:
                 st.button(label, key=key, disabled=not unlocked, on_click=go_stage, args=(sid,), width="stretch")
-        pill = "🏁 결과 보기" if game["done"] else f"⏳ 남은 턴 <b>{MAX_TURNS - game['turn']}/{MAX_TURNS}</b>"
+        if game["done"]:
+            pill = "🏁 결과 보기"
+        elif not game.get("started"):
+            pill = "📋 상황 확인"
+        else:
+            pill = f"⏳ 남은 턴 <b>{MAX_TURNS - game['turn']}/{MAX_TURNS}</b>"
         cols[5].markdown(f'<div class="pill">{pill}</div>', unsafe_allow_html=True)
+
+
+def draw_brief(game):
+    sid = game["stage_id"]
+    left, right = st.columns([1, 2.05], gap="medium")
+    with left:
+        st.markdown(character_card_html(game), unsafe_allow_html=True)
+    with right:
+        st.markdown(brief_html(sid), unsafe_allow_html=True)
+        st.write("")
+        st.button("▶ 상황을 확인했어요. 대화 시작하기", key="start", on_click=start_talk, width="stretch")
 
 
 def draw_play(game):
@@ -900,6 +1043,8 @@ def draw_play(game):
     left, right = st.columns([1, 2.05], gap="medium")
     with left:
         st.markdown(character_card_html(game), unsafe_allow_html=True)
+        with st.expander("📋 상황 다시 보기"):
+            st.markdown(brief_html(game["stage_id"]), unsafe_allow_html=True)
     with right:
         st.markdown(score_card_html(game), unsafe_allow_html=True)
         with st.container(key="chatcard"):
@@ -939,7 +1084,7 @@ def draw_result(game):
     with right:
         st.markdown(result_right_html(game), unsafe_allow_html=True)
         b0, b1, b2 = st.columns([1.6, 1, 1])
-        b1.button("↻ 다시 도전하기", key="retry", on_click=go_stage, args=(sid,), width="stretch")
+        b1.button("↻ 다시 도전하기", key="retry", on_click=go_stage, args=(sid, True), width="stretch")
         if nxt and is_unlocked(nxt):
             b2.button("다음 스테이지 →", key="next", on_click=go_stage, args=(nxt,), width="stretch")
         else:
@@ -963,6 +1108,8 @@ game = st.session_state.game
 draw_topbar(game)
 if game["done"]:
     draw_result(game)
+elif not game.get("started"):
+    draw_brief(game)
 else:
     draw_play(game)
 st.markdown('<div class="notice">무료 Gemini API를 사용해요. 실제 이름·연락처 같은 개인정보는 입력하지 마세요.</div>',
