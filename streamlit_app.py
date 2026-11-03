@@ -781,6 +781,11 @@ header[data-testid="stHeader"] { background: transparent; }
                        min-height:58px; font-weight:800 !important; }
 .st-key-start button p { font-size:18px !important; font-weight:800 !important; }
 
+.st-key-recall button { background:transparent !important; border:1px solid #d6d9e3 !important; border-radius:999px !important;
+                        min-height:30px !important; padding:2px 10px !important; color:#5b6380 !important; }
+.st-key-recall button p { font-size:13px !important; font-weight:600 !important; }
+.st-key-recall button:hover { background:#f3f4f8 !important; color:#24345c !important; }
+
 /* ── 사이드바 ── */
 [data-testid="stSidebar"] { background:#ffffff; border-right:1px solid #e7e9f0; }
 .sb-title { font-size:24px; font-weight:800; color:#24345c; }
@@ -1038,13 +1043,16 @@ def draw_brief(game):
         st.button("▶ 상황을 확인했어요. 대화 시작하기", key="start", on_click=start_talk, width="stretch")
 
 
+@st.dialog("📋 지금 상황", width="large")
+def show_brief_dialog(stage_id):
+    st.markdown(brief_html(stage_id), unsafe_allow_html=True)
+
+
 def draw_play(game):
     stage = STAGES[game["stage_id"]]
     left, right = st.columns([1, 2.05], gap="medium")
     with left:
         st.markdown(character_card_html(game), unsafe_allow_html=True)
-        with st.expander("📋 상황 다시 보기"):
-            st.markdown(brief_html(game["stage_id"]), unsafe_allow_html=True)
     with right:
         st.markdown(score_card_html(game), unsafe_allow_html=True)
         with st.container(key="chatcard"):
@@ -1055,6 +1063,9 @@ def draw_play(game):
                 c1, c2 = st.columns([5, 1.1], vertical_alignment="center")
                 msg = c1.text_input("메시지", placeholder=stage["placeholder"], label_visibility="collapsed")
                 sent = c2.form_submit_button("➤ 보내기", width="stretch")
+            _, rc = st.columns([4, 1.1])
+            if rc.button("📋 상황 다시 보기", key="recall", width="stretch"):
+                show_brief_dialog(game["stage_id"])
     if sent and msg and msg.strip():
         with st.spinner(f"{stage['character']}이(가) 생각하는 중…"):
             try:
