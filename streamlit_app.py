@@ -342,40 +342,74 @@ def pick_model():
     return None
 
 
+def error_code(e):
+    """오류에서 숫자 코드(429, 503 등)를 꺼내요."""
+    code = getattr(e, "code", None)
+    if isinstance(code, int):
+        return code
+    m = re.match(r"\s*(\d{3})", str(e))
+    return int(m.group(1)) if m else None
+
+
 def is_rate_limit(e):
     s = str(e)
-    return "429" in s or "RESOURCE_EXHAUSTED" in s
+    return error_code(e) == 429 or "RESOURCE_EXHAUSTED" in s
+
+
+def is_busy(e):
+    """Gemini 서버가 잠깐 바쁜 경우 (503 high demand 등) — 잠깐 기다리면 풀려요."""
+    return error_code(e) in (500, 502, 503, 504) or "UNAVAILABLE" in str(e)
 
 
 def friendly_error(e):
+    """화면에는 한국어 안내만 보여주고, 자세한 오류는 Streamlit 로그에만 남겨요."""
+    print(f"[오류] {type(e).__name__}: {str(e)[:300]}")
     if is_rate_limit(e):
-        return "⏳ 무료 사용량 한도에 걸렸어요. 1분쯤 기다렸다가 같은 메시지를 다시 보내 주세요. (턴은 줄지 않았어요)"
-    return f"⚠️ 오류가 났어요. 같은 메시지를 다시 보내 주세요. (턴은 줄지 않았어요) — {str(e)[:120]}"
+        return "⏳ 지금 AI 사용량이 많아요. 1분쯤 기다렸다가 같은 메시지를 다시 보내 주세요. (턴은 줄지 않았어요)"
+    if is_busy(e):
+        return "😅 AI가 잠깐 바빠요. 잠시 후 같은 메시지를 다시 보내 주세요. (턴은 줄지 않았어요)"
+    if isinstance(e, json.JSONDecodeError):
+        return "🤔 AI 대답을 제대로 읽지 못했어요. 같은 메시지를 다시 보내 주세요. (턴은 줄지 않았어요)"
+    if error_code(e) in (401, 403):
+        return "🔑 AI 연결 설정(API 키)에 문제가 있어요. 앱 설정의 Secrets를 확인해 주세요."
+    return "⚠️ AI와 연결이 잠깐 끊겼어요. 같은 메시지를 다시 보내 주세요. (턴은 줄지 않았어요)"
 
 
 def ask_gemini_json(system_prompt, user_prompt, temperature, retries=2):
-    """Gemini에게 JSON으로 대답을 받아요. 사용량 한도에 걸리면 20초 기다렸다가 다시 시도해요."""
-    for attempt in range(retries + 1):
-        try:
-            res = get_client().models.generate_content(
-                model=MODEL,
-                contents=user_prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_prompt,
-                    temperature=temperature,
-                    response_mime_type="application/json",
-                ),
-            )
-            text = re.sub(r"^```(json)?|```$", "", (res.text or "").strip()).strip()
-            return json.loads(text)
-        except json.JSONDecodeError:
-            if attempt == retries:
-                raise
-        except Exception as e:
-            if is_rate_limit(e) and attempt < retries:
-                time.sleep(20)
-            else:
-                raise
+    """Gemini에게 JSON으로 대답을 받아요.
+    - 서버가 바쁘면(503 등) 2초, 4초 기다렸다가 같은 모델로 다시 시도해요.
+    - 그래도 안 되거나 사용량 한도(429)에 걸리면 다른 Flash 모델로 바꿔서 시도해요.
+    - 전부 실패하면 마지막 오류를 넘겨서 화면에 한국어 안내가 나오게 해요."""
+    models = [MODEL] + [m for m in MODEL_CANDIDATES if m != MODEL]
+    last_error = None
+    for i, model in enumerate(models):
+        attempts = retries + 1 if i == 0 else 1
+        for attempt in range(attempts):
+            try:
+                res = get_client().models.generate_content(
+                    model=model,
+                    contents=user_prompt,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_prompt,
+                        temperature=temperature,
+                        response_mime_type="application/json",
+                    ),
+                )
+                text = re.sub(r"^```(json)?|```$", "", (res.text or "").strip()).strip()
+                return json.loads(text)
+            except json.JSONDecodeError as e:
+                last_error = e  # 형식이 깨졌으면 다시 시도
+            except Exception as e:
+                last_error = e
+                print(f"[{model}] {attempt + 1}번째 시도 실패: {str(e)[:100]}")
+                if is_busy(e):
+                    if attempt < attempts - 1:
+                        time.sleep(2 * (attempt + 1))
+                    continue
+                if is_rate_limit(e) or error_code(e) == 404:
+                    break  # 이 모델은 지금 못 쓰니 다음 모델로
+                raise  # API 키 문제 등 기다려도 안 풀리는 오류
+    raise last_error
 
 
 # ═════════════════════════════════════════════
@@ -529,7 +563,8 @@ def play_turn(game, user_msg):
         try:
             game["report"] = call_report(stage, game, stage["endings"][game["result"]][0], ctx)
         except Exception as e:
-            game["report"] = {"one_line": f"(리포트 생성 오류: {str(e)[:80]})"}
+            print(f"[리포트 오류] {str(e)[:200]}")
+            game["report"] = {"one_line": "(AI가 바빠서 리포트를 만들지 못했어요. 결과와 점수는 그대로 저장됐어요.)"}
     return game
 
 
@@ -666,7 +701,14 @@ header[data-testid="stHeader"] { background: transparent; }
 .logo { display:flex; align-items:center; gap:12px; color:#fff; font-size:28px; font-weight:800; letter-spacing:-0.5px; }
 .st-key-topbar button { border-radius: 999px !important; border: 2px solid transparent !important; background: #eef0f6 !important;
                         color: #2b3a63 !important; font-weight: 700 !important; padding: 6px 4px !important; min-height: 44px; }
-.st-key-topbar button p { font-size: 15px !important; font-weight: 700 !important; white-space: nowrap; }
+.st-key-topbar button p { font-size: 15px !important; font-weight: 700 !important; white-space: normal !important; word-break: keep-all; }
+.st-key-topbar button [data-testid="stMarkdownContainer"] { overflow: visible !important; text-overflow: clip !important; white-space: normal !important; }
+/* 노트북처럼 좁은 화면에서는 상단 버튼을 두 줄로 나눠서 글자가 '…'로 잘리지 않게 */
+@media (max-width: 1200px) {
+  .st-key-topbar [data-testid="stHorizontalBlock"] { flex-wrap: wrap !important; row-gap: 8px !important; }
+  .st-key-topbar [data-testid="stColumn"] { flex: 1 1 auto !important; width: auto !important; min-width: fit-content !important; }
+  .st-key-topbar button { padding: 6px 12px !important; }
+}
 .st-key-topbar button:hover { background: #ffffff !important; }
 .st-key-topbar [class*="st-key-tabon_"] button { background: #1f2b4d !important; color: #fff !important; border: 2px solid #ffffff !important; }
 .st-key-topbar button:disabled { background: #4a5679 !important; color: #b9c0d4 !important; opacity: 1; }
@@ -1110,7 +1152,11 @@ def draw_result(game):
 st.markdown(CSS, unsafe_allow_html=True)
 MODEL = pick_model() if get_api_key() else None
 if MODEL is None:
-    st.error("❌ Gemini 연결 실패. Streamlit 앱 설정의 Secrets에 GEMINI_API_KEY 가 들어 있는지 확인하세요.")
+    pick_model.clear()  # 실패 결과를 저장해 두지 않아서, 새로고침하면 다시 연결을 시도해요
+    if get_api_key():
+        st.warning("😅 AI가 잠깐 바빠서 연결하지 못했어요. 잠시 후 새로고침(F5) 해 주세요.")
+    else:
+        st.error("❌ Gemini 연결 실패. Streamlit 앱 설정의 Secrets에 GEMINI_API_KEY 가 들어 있는지 확인하세요.")
     st.stop()
 
 init_state()
