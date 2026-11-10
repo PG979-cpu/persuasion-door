@@ -329,18 +329,27 @@ def get_client():
     return genai.Client(api_key=get_api_key())
 
 
-MODEL_CANDIDATES = ["gemini-3.5-flash", "gemini-flash-latest", "gemini-2.5-flash"]
+# 앞에서부터 우선 사용. 실제로 있는 모델만 골라 쓰기 때문에 없는 이름이 섞여 있어도 괜찮아요.
+# 모델마다 무료 사용량이 따로라서, 하나가 한도에 걸리면 다음 모델로 넘어가요.
+MODEL_CANDIDATES = [
+    "gemini-3.5-flash", "gemini-flash-latest", "gemini-3-flash-preview",
+    "gemini-2.5-flash", "gemini-flash-lite-latest", "gemini-2.5-flash-lite",
+]
 
 
 @st.cache_resource
-def pick_model():
-    for m in MODEL_CANDIDATES:
-        try:
-            get_client().models.generate_content(model=m, contents="hi")
-            return m
-        except Exception as e:
-            print(f"{m} 사용 불가: {str(e)[:100]}")
-    return None
+def pick_models():
+    """Google에 '지금 쓸 수 있는 모델 목록'을 물어봐서, 후보 중 실제로 있는 것만 골라요.
+    (목록 조회는 무료 사용량을 쓰지 않아요)"""
+    try:
+        names = {m.name.split("/")[-1] for m in get_client().models.list()}
+        found = [m for m in MODEL_CANDIDATES if m in names]
+        print(f"[모델] 사용할 모델: {found}")
+        if found:
+            return found
+    except Exception as e:
+        print(f"[모델] 목록 조회 실패: {str(e)[:150]}")
+    return list(MODEL_CANDIDATES)
 
 
 def error_code(e):
@@ -357,6 +366,11 @@ def is_rate_limit(e):
     return error_code(e) == 429 or "RESOURCE_EXHAUSTED" in s
 
 
+def is_daily_limit(e):
+    """하루 무료 사용량을 다 쓴 경우 (기다려도 오늘은 안 풀려요)"""
+    return is_rate_limit(e) and "perday" in str(e).lower().replace("_", "")
+
+
 def is_busy(e):
     """Gemini 서버가 잠깐 바쁜 경우 (503 high demand 등) — 잠깐 기다리면 풀려요."""
     return error_code(e) in (500, 502, 503, 504) or "UNAVAILABLE" in str(e)
@@ -365,6 +379,9 @@ def is_busy(e):
 def friendly_error(e):
     """화면에는 한국어 안내만 보여주고, 자세한 오류는 Streamlit 로그에만 남겨요."""
     print(f"[오류] {type(e).__name__}: {str(e)[:300]}")
+    if is_daily_limit(e):
+        return ("📅 오늘 쓸 수 있는 무료 AI 사용량을 다 썼어요. 한국 시간 오후 5시쯤 초기화되니 그 뒤에 다시 해 주세요. "
+                "(턴은 줄지 않았어요)")
     if is_rate_limit(e):
         return "⏳ 지금 AI 사용량이 많아요. 1분쯤 기다렸다가 같은 메시지를 다시 보내 주세요. (턴은 줄지 않았어요)"
     if is_busy(e):
@@ -387,8 +404,8 @@ def ask_gemini_json(system_prompt, user_prompt, temperature, retries=2, client=N
     try:
         return _ask_all_models(system_prompt, user_prompt, temperature, retries, client)
     except Exception as e:
-        if not is_rate_limit(e):
-            raise
+        if not is_rate_limit(e) or is_daily_limit(e):
+            raise  # 하루 한도는 20초 기다려도 소용없어요
         print("[사용량 한도] 20초 기다렸다가 다시 시도해요.")
         time.sleep(20)
         return _ask_all_models(system_prompt, user_prompt, temperature, 0, client)
@@ -435,18 +452,17 @@ def _generate_json(client, model, system_prompt, user_prompt, temperature):
 
 
 def _ask_all_models(system_prompt, user_prompt, temperature, retries, client):
-    models = [MODEL] + [m for m in MODEL_CANDIDATES if m != MODEL]
-    last_error = None
-    for i, model in enumerate(models):
+    errors = []
+    for i, model in enumerate(MODELS):
         attempts = retries + 1 if i == 0 else 1
         for attempt in range(attempts):
             try:
                 return _generate_json(client, model, system_prompt, user_prompt, temperature)
             except json.JSONDecodeError as e:
-                last_error = e  # 형식이 깨졌으면 다시 시도
+                errors.append(e)  # 형식이 깨졌으면 다시 시도
             except Exception as e:
-                last_error = e
-                print(f"[{model}] {attempt + 1}번째 시도 실패: {str(e)[:100]}")
+                errors.append(e)
+                print(f"[{model}] {attempt + 1}번째 시도 실패: {str(e)[:150]}")
                 if is_busy(e):
                     if attempt < attempts - 1:
                         time.sleep(2 * (attempt + 1))
@@ -454,7 +470,17 @@ def _ask_all_models(system_prompt, user_prompt, temperature, retries, client):
                 if error_code(e) in (401, 403):
                     raise  # API 키 문제는 기다려도 안 풀려요
                 break  # 그 밖의 오류는 이 모델을 건너뛰고 다음 모델로
-    raise last_error
+    raise _main_error(errors)
+
+
+def _main_error(errors):
+    """여러 모델이 다 실패했을 때, 진짜 원인을 알려주는 오류를 골라요.
+    (예: 첫 모델은 사용량 한도인데 마지막 모델이 '없는 모델'이면, 한도 쪽을 알려줘야 해요)"""
+    for check in (is_rate_limit, is_busy, lambda e: error_code(e) != 404):
+        for e in errors:
+            if check(e):
+                return e
+    return errors[-1]
 
 
 # ═════════════════════════════════════════════
@@ -1264,14 +1290,11 @@ def draw_result(game):
 # 11. 실행
 # ═════════════════════════════════════════════
 st.markdown(CSS, unsafe_allow_html=True)
-MODEL = pick_model() if get_api_key() else None
-if MODEL is None:
-    pick_model.clear()  # 실패 결과를 저장해 두지 않아서, 새로고침하면 다시 연결을 시도해요
-    if get_api_key():
-        st.warning("😅 AI가 잠깐 바빠서 연결하지 못했어요. 잠시 후 새로고침(F5) 해 주세요.")
-    else:
-        st.error("❌ Gemini 연결 실패. Streamlit 앱 설정의 Secrets에 GEMINI_API_KEY 가 들어 있는지 확인하세요.")
+if not get_api_key():
+    st.error("❌ Gemini 연결 실패. Streamlit 앱 설정의 Secrets에 GEMINI_API_KEY 가 들어 있는지 확인하세요.")
     st.stop()
+MODELS = pick_models()
+MODEL = MODELS[0]
 
 init_state()
 draw_sidebar()
