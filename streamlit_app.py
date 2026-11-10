@@ -373,7 +373,8 @@ def friendly_error(e):
         return "🤔 AI 대답을 제대로 읽지 못했어요. 같은 메시지를 다시 보내 주세요. (턴은 줄지 않았어요)"
     if error_code(e) in (401, 403):
         return "🔑 AI 연결 설정(API 키)에 문제가 있어요. 앱 설정의 Secrets를 확인해 주세요."
-    return "⚠️ AI와 연결이 잠깐 끊겼어요. 같은 메시지를 다시 보내 주세요. (턴은 줄지 않았어요)"
+    tag = error_code(e) or type(e).__name__
+    return f"⚠️ AI와 연결이 잠깐 끊겼어요. 같은 메시지를 다시 보내 주세요. (턴은 줄지 않았어요 · 오류 코드 {tag})"
 
 
 def ask_gemini_json(system_prompt, user_prompt, temperature, retries=2, client=None):
@@ -411,22 +412,24 @@ def fast_thinking(model):
 
 
 def _generate_json(client, model, system_prompt, user_prompt, temperature):
-    def config():
+    def config(thinking):
         return types.GenerateContentConfig(
             system_instruction=system_prompt,
             temperature=temperature,
             response_mime_type="application/json",
-            thinking_config=fast_thinking(model),
+            thinking_config=thinking,
         )
+    thinking = fast_thinking(model)
     try:
-        res = client.models.generate_content(model=model, contents=user_prompt, config=config())
+        res = client.models.generate_content(model=model, contents=user_prompt, config=config(thinking))
     except Exception as e:
-        msg = str(e).lower()
-        if error_code(e) == 400 and model not in NO_FAST_THINKING and ("think" in msg or "budget" in msg):
-            NO_FAST_THINKING.add(model)  # 생각 줄이기를 지원 안 하는 모델 → 기본 설정으로 다시
-            res = client.models.generate_content(model=model, contents=user_prompt, config=config())
-        else:
+        # 서버가 바쁘거나 키 문제가 아니라면, '생각 줄이기' 설정 때문일 수 있어요.
+        # 이 모델은 앞으로 기본 설정으로 부르고, 지금 바로 한 번 더 시도해요.
+        if thinking is None or error_code(e) in (401, 403, 429, 500, 502, 503, 504):
             raise
+        print(f"[{model}] 빠른 설정 실패 → 기본 설정으로 다시: {str(e)[:200]}")
+        NO_FAST_THINKING.add(model)
+        res = client.models.generate_content(model=model, contents=user_prompt, config=config(None))
     text = re.sub(r"^```(json)?|```$", "", (res.text or "").strip()).strip()
     return json.loads(text)
 
@@ -448,9 +451,9 @@ def _ask_all_models(system_prompt, user_prompt, temperature, retries, client):
                     if attempt < attempts - 1:
                         time.sleep(2 * (attempt + 1))
                     continue
-                if is_rate_limit(e) or error_code(e) == 404:
-                    break  # 이 모델은 지금 못 쓰니 다음 모델로
-                raise  # API 키 문제 등 기다려도 안 풀리는 오류
+                if error_code(e) in (401, 403):
+                    raise  # API 키 문제는 기다려도 안 풀려요
+                break  # 그 밖의 오류는 이 모델을 건너뛰고 다음 모델로
     raise last_error
 
 
@@ -604,10 +607,18 @@ def play_turn(game, user_msg):
     ctx = stage_context(game["stage_id"])
     # 캐릭터 대답과 심판 채점은 서로 기다릴 필요가 없어서 동시에 불러요 (대기 시간 약 절반)
     client = get_client()
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        f_char = pool.submit(call_character, stage, game["history"], user_msg, turn, ctx, client)
-        f_judge = pool.submit(call_judge, stage, game["history"], user_msg, ctx, client)
-        char, judge = f_char.result(), f_judge.result()
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            f_char = pool.submit(call_character, stage, game["history"], user_msg, turn, ctx, client)
+            f_judge = pool.submit(call_judge, stage, game["history"], user_msg, ctx, client)
+            char, judge = f_char.result(), f_judge.result()
+    except Exception as e:
+        if error_code(e) is not None:
+            raise  # 서버가 준 오류는 그대로 안내
+        # 동시에 부르는 과정에서 생긴 오류면, 안전하게 하나씩 차례로 다시 불러요
+        print(f"[동시 호출 실패 → 차례로 다시] {type(e).__name__}: {str(e)[:200]}")
+        char = call_character(stage, game["history"], user_msg, turn, ctx, client)
+        judge = call_judge(stage, game["history"], user_msg, ctx, client)
 
     turn_score = round(sum(judge["scores"][k] * w for k, (_, w) in stage["criteria"].items()) * SCORE_SCALE)
     game["score"] = min(stage["goal_score"], game["score"] + turn_score)
@@ -810,6 +821,13 @@ header[data-testid="stHeader"] { background: transparent; }
 .me-avatar { width:52px; height:52px; border-radius:50%; background:#dfe3ef; flex:none; display:flex; align-items:center; justify-content:center; font-size:26px; }
 .who { font-weight:800; color:#24345c; margin-bottom:6px; font-size:15px; }
 .bubble { background:#eef0f5; color:#1f2640; padding:14px 18px; border-radius:18px; font-size:16px; line-height:1.55; max-width:560px; }
+/* AI 대답을 기다리는 동안 보여주는 '…생각하는 중' 말풍선 */
+.typing { display:flex; align-items:center; gap:5px; }
+.typing span { width:8px; height:8px; border-radius:50%; background:#7d86a3; animation: typing-dot 1.2s infinite ease-in-out; }
+.typing span:nth-child(2) { animation-delay: .2s; }
+.typing span:nth-child(3) { animation-delay: .4s; }
+.typing small { margin-left:8px; color:#5d6582; font-size:14.5px; }
+@keyframes typing-dot { 0%, 80%, 100% { opacity:.25; transform:translateY(0); } 40% { opacity:1; transform:translateY(-4px); } }
 .me .bubble { background:#2f3e6b; color:#fff; }
 .time { color:#9aa0b3; font-size:12px; white-space:nowrap; }
 .judge { display:flex; flex-wrap:wrap; align-items:center; gap:10px 16px; background:#f3f4f8; border-radius:16px; padding:12px 18px; margin:8px 0 14px; }
@@ -936,7 +954,15 @@ def score_card_html(game):
             f'<span class="num">{game["score"]} <small>/ {goal}</small></span></div></div>')
 
 
-def chat_html(game):
+def with_josa(name):
+    """받침이 있으면 '이', 없으면 '가'를 붙여요. (교수님이, 선배가)"""
+    last = name[-1]
+    has_batchim = "가" <= last <= "힣" and (ord(last) - 0xAC00) % 28 != 0
+    return name + ("이" if has_batchim else "가")
+
+
+def chat_html(game, pending=None):
+    """pending: 방금 보낸 메시지. AI 대답을 기다리는 동안 내 말풍선과 '생각하는 중' 표시를 보여줘요."""
     stage = STAGES[game["stage_id"]]
     sid = game["stage_id"]
     parts = []
@@ -960,6 +986,15 @@ def chat_html(game):
         label, last_line = stage["endings"][game["result"]]
         char_row(last_line, now_hm(), "수긍" if game["result"] == "success" else "단호함")
         parts.append(f'<div class="ending">{label}</div>')
+    if pending:
+        parts.append(f'<div class="row me"><div class="time">{now_hm()}</div>'
+                     f'<div><div class="who" style="text-align:right">나</div><div class="bubble">{esc(pending)}</div></div>'
+                     f'<div class="me-avatar">👤</div></div>')
+        mood = game["history"][-1].get("mood", "단호함")
+        parts.append(f'<div class="row"><div class="avatar">{character_art(sid, mood)}</div>'
+                     f'<div><div class="who">{esc(stage["character"])}</div>'
+                     f'<div class="bubble typing"><span></span><span></span><span></span>'
+                     f'<small>{esc(with_josa(stage["character"]))} 생각하는 중…</small></div></div></div>')
     return f'<div class="chat"><div>{"".join(parts)}</div></div>'
 
 
@@ -1056,6 +1091,7 @@ def init_state():
     ss.setdefault("current", "stage1")
     ss.setdefault("demo", False)
     ss.setdefault("error", None)
+    ss.setdefault("pending", None)     # 보냈지만 아직 AI 대답을 기다리는 메시지
     if "game" not in ss:
         ss.game = new_game(ss.current)
 
@@ -1071,6 +1107,7 @@ def go_stage(sid, started=False):
     st.session_state.current = sid
     st.session_state.game = new_game(sid, started)
     st.session_state.error = None
+    st.session_state.pending = None
 
 
 def start_talk():
@@ -1158,26 +1195,37 @@ def draw_play(game):
         st.markdown(character_card_html(game), unsafe_allow_html=True)
     with right:
         st.markdown(score_card_html(game), unsafe_allow_html=True)
+        pending = st.session_state.get("pending")
         with st.container(key="chatcard"):
-            st.markdown(chat_html(game), unsafe_allow_html=True)
-            if st.session_state.error:
+            st.markdown(chat_html(game, pending), unsafe_allow_html=True)
+            if st.session_state.error and not pending:
                 st.warning(st.session_state.error)
             with st.form("send", clear_on_submit=True, border=False):
                 c1, c2 = st.columns([5, 1.1], vertical_alignment="center")
-                msg = c1.text_input("메시지", placeholder=stage["placeholder"], label_visibility="collapsed")
-                sent = c2.form_submit_button("➤ 보내기", width="stretch")
+                msg = c1.text_input("메시지", placeholder=stage["placeholder"], label_visibility="collapsed",
+                                    disabled=bool(pending))
+                sent = c2.form_submit_button("⏳ 대기 중" if pending else "➤ 보내기", width="stretch",
+                                             disabled=bool(pending))
             _, rc = st.columns([4, 1.1])
             if rc.button("📋 상황 다시 보기", key="recall", width="stretch"):
                 show_brief_dialog(game["stage_id"])
-    if sent and msg and msg.strip():
-        with st.spinner(f"{stage['character']}이(가) 생각하는 중…"):
-            try:
-                st.session_state.game = play_turn(game, msg.strip())
-                st.session_state.error = None
-                if st.session_state.game["done"]:
-                    record_best(st.session_state.game)
-            except Exception as e:
-                st.session_state.error = friendly_error(e)
+
+    # ① 보내기를 누르면: 내 말풍선과 '생각하는 중…'을 먼저 화면에 띄우고
+    if sent and msg and msg.strip() and not pending:
+        st.session_state.pending = msg.strip()
+        st.session_state.error = None
+        st.rerun()
+
+    # ② 화면이 그려진 다음에 AI를 불러요 (그동안 '생각하는 중…'이 보여요)
+    if pending:
+        try:
+            st.session_state.game = play_turn(game, pending)
+            st.session_state.error = None
+            if st.session_state.game["done"]:
+                record_best(st.session_state.game)
+        except Exception as e:
+            st.session_state.error = friendly_error(e)
+        st.session_state.pending = None
         st.rerun()
 
 
