@@ -316,17 +316,42 @@ RESULT_BUBBLE = {
 # ═════════════════════════════════════════════
 # 3. Gemini 연결 (무료 Flash 모델 자동 선택)
 # ═════════════════════════════════════════════
+KEY_NAMES = ["GEMINI_API_KEY"] + [f"GEMINI_API_KEY_{i}" for i in range(2, 6)]
+
+
+def get_api_keys():
+    """Secrets 에 넣은 키를 모두 읽어요: GEMINI_API_KEY, GEMINI_API_KEY_2, ... GEMINI_API_KEY_5
+    키가 여러 개면 하나가 무료 사용량 한도에 걸릴 때 자동으로 다음 키로 넘어가요."""
+    keys = []
+    for name in KEY_NAMES:
+        try:
+            value = st.secrets.get(name)
+        except Exception:
+            value = None
+        value = (value or os.environ.get(name) or "").strip()
+        if value and value not in keys:
+            keys.append(value)
+    return keys
+
+
 def get_api_key():
-    """Streamlit 앱 설정의 Secrets 에 저장한 GEMINI_API_KEY 를 읽어요."""
-    try:
-        return st.secrets["GEMINI_API_KEY"]
-    except Exception:
-        return os.environ.get("GEMINI_API_KEY")
+    keys = get_api_keys()
+    return keys[0] if keys else None
 
 
 @st.cache_resource
+def get_clients():
+    return [genai.Client(api_key=k) for k in get_api_keys()]
+
+
 def get_client():
-    return genai.Client(api_key=get_api_key())
+    return get_clients()[0]
+
+
+@st.cache_resource
+def key_state():
+    """지금 쓰고 있는 키 번호. 한도에 걸린 키를 매번 다시 시도하지 않게 기억해 둬요."""
+    return {"idx": 0}
 
 
 # 앞에서부터 우선 사용. 실제로 있는 모델만 골라 쓰기 때문에 없는 이름이 섞여 있어도 괜찮아요.
@@ -394,21 +419,34 @@ def friendly_error(e):
     return f"⚠️ AI와 연결이 잠깐 끊겼어요. 같은 메시지를 다시 보내 주세요. (턴은 줄지 않았어요 · 오류 코드 {tag})"
 
 
-def ask_gemini_json(system_prompt, user_prompt, temperature, retries=2, client=None):
+def ask_gemini_json(system_prompt, user_prompt, temperature, retries=2, api=None):
     """Gemini에게 JSON으로 대답을 받아요.
     - 서버가 바쁘면(503 등) 2초, 4초 기다렸다가 같은 모델로 다시 시도해요.
     - 그래도 안 되거나 사용량 한도(429)에 걸리면 다른 Flash 모델로 바꿔서 시도해요.
-    - 모든 모델이 사용량 한도에 걸렸으면 20초 기다렸다가 한 번 더 시도해요.
-    - 전부 실패하면 마지막 오류를 넘겨서 화면에 한국어 안내가 나오게 해요."""
-    client = client or get_client()
-    try:
-        return _ask_all_models(system_prompt, user_prompt, temperature, retries, client)
-    except Exception as e:
-        if not is_rate_limit(e) or is_daily_limit(e):
-            raise  # 하루 한도는 20초 기다려도 소용없어요
-        print("[사용량 한도] 20초 기다렸다가 다시 시도해요.")
-        time.sleep(20)
-        return _ask_all_models(system_prompt, user_prompt, temperature, 0, client)
+    - 한 키의 모든 모델이 한도에 걸리면 다음 API 키로 넘어가요.
+    - 모든 키가 '분당' 한도면 20초 기다렸다가 한 번 더 시도해요. (하루 한도면 바로 안내)
+    - api: (클라이언트 목록, 키 상태). 동시에 부를 때는 화면 쪽에서 미리 넘겨줘요."""
+    clients, state = api or (get_clients(), key_state())
+    start = state["idx"] % len(clients)
+    last_error = None
+    for k in range(len(clients)):
+        idx = (start + k) % len(clients)
+        try:
+            out = _ask_all_models(system_prompt, user_prompt, temperature, retries if k == 0 else 0, clients[idx])
+            if idx != state["idx"]:
+                print(f"[키] {idx + 1}번 키로 바꿔서 계속 사용해요.")
+                state["idx"] = idx
+            return out
+        except Exception as e:
+            if not is_rate_limit(e):
+                raise
+            print(f"[키] {idx + 1}번 키가 사용량 한도예요. 다음 키를 시도해요.")
+            last_error = e
+    if is_daily_limit(last_error):
+        raise last_error  # 모든 키가 오늘 한도 → 기다려도 소용없어요
+    print("[사용량 한도] 모든 키가 분당 한도라 20초 기다렸다가 다시 시도해요.")
+    time.sleep(20)
+    return _ask_all_models(system_prompt, user_prompt, temperature, 0, clients[start])
 
 
 # ── 속도 올리기: AI가 대답하기 전에 오래 '생각'하지 않게 해요 ──
@@ -491,7 +529,7 @@ def transcript(stage, history):
     return "\n".join(f"{who(h)}: {h['text']}" for h in history)
 
 
-def call_character(stage, history, user_msg, turn, ctx, client=None):
+def call_character(stage, history, user_msg, turn, ctx, api=None):
     """① 캐릭터: 대답 + 속마음 + 표정"""
     hidden = "\n- ".join(stage["hidden"])
     system = f"""너는 설득 연습 게임 속 캐릭터 '{stage['character']}'이다. 반드시 이 역할로만 대답한다.
@@ -515,13 +553,13 @@ def call_character(stage, history, user_msg, turn, ctx, client=None):
 [출력 형식] JSON만 출력:
 {{"reply": "대답", "inner_thought": "속마음 한 줄", "mood": "단호함|고민|수긍"}}"""
     prompt = f"[지금까지 대화]\n{transcript(stage, history)}\n\n[사용자의 새 발언]\n{user_msg}"
-    out = ask_gemini_json(system, prompt, temperature=0.8, client=client)
+    out = ask_gemini_json(system, prompt, temperature=0.8, api=api)
     if out.get("mood") not in MOODS:
         out["mood"] = "고민"
     return out
 
 
-def call_judge(stage, history, user_msg, ctx, client=None):
+def call_judge(stage, history, user_msg, ctx, api=None):
     """② 심판: 항목별 점수 + 한 줄 평가 + 사용자 톤/전략"""
     crit = "\n".join(f"- {k}: {v[0]} (0~5점)" for k, v in stage["criteria"].items())
     shots = "\n".join(f"발언: {ex}\n점수: {json.dumps(sc, ensure_ascii=False)}" for ex, sc in stage["examples"])
@@ -545,7 +583,7 @@ def call_judge(stage, history, user_msg, ctx, client=None):
 [출력 형식] JSON만 출력:
 {{"scores": {{{score_keys}}}, "comment": "25자 내외 한 줄 평가", "user_tone": "...", "strategy": "..."}}"""
     prompt = f"[지금까지 대화]\n{transcript(stage, history)}\n\n[채점할 사용자 발언]\n{user_msg}"
-    out = ask_gemini_json(system, prompt, temperature=0.1, client=client)
+    out = ask_gemini_json(system, prompt, temperature=0.1, api=api)
     scores = {}
     for k in stage["criteria"]:
         try:
@@ -632,19 +670,19 @@ def play_turn(game, user_msg):
     turn = game["turn"] + 1
     ctx = stage_context(game["stage_id"])
     # 캐릭터 대답과 심판 채점은 서로 기다릴 필요가 없어서 동시에 불러요 (대기 시간 약 절반)
-    client = get_client()
+    api = (get_clients(), key_state())  # 동시에 부르기 전에 미리 준비
     try:
         with ThreadPoolExecutor(max_workers=2) as pool:
-            f_char = pool.submit(call_character, stage, game["history"], user_msg, turn, ctx, client)
-            f_judge = pool.submit(call_judge, stage, game["history"], user_msg, ctx, client)
+            f_char = pool.submit(call_character, stage, game["history"], user_msg, turn, ctx, api)
+            f_judge = pool.submit(call_judge, stage, game["history"], user_msg, ctx, api)
             char, judge = f_char.result(), f_judge.result()
     except Exception as e:
         if error_code(e) is not None:
             raise  # 서버가 준 오류는 그대로 안내
         # 동시에 부르는 과정에서 생긴 오류면, 안전하게 하나씩 차례로 다시 불러요
         print(f"[동시 호출 실패 → 차례로 다시] {type(e).__name__}: {str(e)[:200]}")
-        char = call_character(stage, game["history"], user_msg, turn, ctx, client)
-        judge = call_judge(stage, game["history"], user_msg, ctx, client)
+        char = call_character(stage, game["history"], user_msg, turn, ctx, api)
+        judge = call_judge(stage, game["history"], user_msg, ctx, api)
 
     turn_score = round(sum(judge["scores"][k] * w for k, (_, w) in stage["criteria"].items()) * SCORE_SCALE)
     game["score"] = min(stage["goal_score"], game["score"] + turn_score)
