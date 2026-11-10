@@ -4,6 +4,7 @@
 캐릭터 이미지: images/stage1_단호함.png 처럼 파일을 올리면 그 그림을 쓰고, 없으면 기본 그림(SVG)을 그려요.
 """
 import base64
+import copy
 import html
 import json
 import os
@@ -466,6 +467,30 @@ def fast_thinking(model):
         return None
 
 
+class BlockedError(Exception):
+    """Gemini 안전 필터가 대답을 막은 경우 (욕설 등). 다시 시도해도 똑같이 막혀서 바로 넘겨요."""
+
+
+def _safety_settings():
+    """게임 특성상 무례한 말에도 캐릭터가 반응해야 해서, 욕설·괴롭힘 필터를 '아주 심한 것만 막기'로 낮춰요."""
+    try:
+        level = types.HarmBlockThreshold.BLOCK_ONLY_HIGH
+        return [types.SafetySetting(category=c, threshold=level) for c in (
+            types.HarmCategory.HARM_CATEGORY_HARASSMENT, types.HarmCategory.HARM_CATEGORY_HATE_SPEECH)]
+    except Exception:
+        return None
+
+
+def _is_blocked(res):
+    try:
+        if getattr(getattr(res, "prompt_feedback", None), "block_reason", None):
+            return True
+        reason = str(getattr(res.candidates[0], "finish_reason", "") or "")
+        return any(w in reason.upper() for w in ("SAFETY", "BLOCKLIST", "PROHIBITED"))
+    except Exception:
+        return False
+
+
 def _generate_json(client, model, system_prompt, user_prompt, temperature):
     def config(thinking):
         return types.GenerateContentConfig(
@@ -473,6 +498,7 @@ def _generate_json(client, model, system_prompt, user_prompt, temperature):
             temperature=temperature,
             response_mime_type="application/json",
             thinking_config=thinking,
+            safety_settings=_safety_settings(),
         )
     thinking = fast_thinking(model)
     try:
@@ -485,7 +511,13 @@ def _generate_json(client, model, system_prompt, user_prompt, temperature):
         print(f"[{model}] 빠른 설정 실패 → 기본 설정으로 다시: {str(e)[:200]}")
         NO_FAST_THINKING.add(model)
         res = client.models.generate_content(model=model, contents=user_prompt, config=config(None))
-    text = re.sub(r"^```(json)?|```$", "", (res.text or "").strip()).strip()
+    try:
+        raw = (res.text or "").strip()
+    except Exception:  # 막힌 대답은 text를 읽을 때 오류가 나기도 해요
+        raw = ""
+    if not raw and _is_blocked(res):
+        raise BlockedError("안전 필터가 대답을 막았어요")
+    text = re.sub(r"^```(json)?|```$", "", raw).strip()
     return json.loads(text)
 
 
@@ -496,6 +528,8 @@ def _ask_all_models(system_prompt, user_prompt, temperature, retries, client):
         for attempt in range(attempts):
             try:
                 return _generate_json(client, model, system_prompt, user_prompt, temperature)
+            except BlockedError:
+                raise  # 다른 모델·키로 다시 해도 똑같이 막혀요 → 바로 넘김 (느려지지 않게)
             except json.JSONDecodeError as e:
                 errors.append(e)  # 형식이 깨졌으면 다시 시도
             except Exception as e:
@@ -553,7 +587,12 @@ def call_character(stage, history, user_msg, turn, ctx, api=None):
 [출력 형식] JSON만 출력:
 {{"reply": "대답", "inner_thought": "속마음 한 줄", "mood": "단호함|고민|수긍"}}"""
     prompt = f"[지금까지 대화]\n{transcript(stage, history)}\n\n[사용자의 새 발언]\n{user_msg}"
-    out = ask_gemini_json(system, prompt, temperature=0.8, api=api)
+    try:
+        out = ask_gemini_json(system, prompt, temperature=0.8, api=api)
+    except BlockedError:
+        # 욕설 등으로 AI 대답이 막히면, 기다리지 않고 바로 캐릭터가 불쾌하게 반응해요
+        out = {"reply": "…그런 말을 들으면 더 이야기하고 싶지 않네요. 다시 정중하게 말해 주세요.",
+               "inner_thought": "말이 너무 거칠다", "mood": "단호함"}
     if out.get("mood") not in MOODS:
         out["mood"] = "고민"
     return out
@@ -583,7 +622,11 @@ def call_judge(stage, history, user_msg, ctx, api=None):
 [출력 형식] JSON만 출력:
 {{"scores": {{{score_keys}}}, "comment": "25자 내외 한 줄 평가", "user_tone": "...", "strategy": "..."}}"""
     prompt = f"[지금까지 대화]\n{transcript(stage, history)}\n\n[채점할 사용자 발언]\n{user_msg}"
-    out = ask_gemini_json(system, prompt, temperature=0.1, api=api)
+    try:
+        out = ask_gemini_json(system, prompt, temperature=0.1, api=api)
+    except BlockedError:
+        # 욕설 등으로 채점이 막히면 모든 항목 0점 처리
+        out = {"scores": {}, "comment": "거친 말은 설득에 도움이 되지 않아요", "user_tone": "공격적", "strategy": "감정 호소"}
     scores = {}
     for k in stage["criteria"]:
         try:
@@ -660,7 +703,7 @@ def judge_result(stage, score):
     goal = stage["goal_score"]
     if score >= goal:
         return "success"
-    if score >= goal * 0.6:
+    if score >= goal * 0.8:  # 80점 이상이어야 🟡 (다음 스테이지 열림), 그 아래는 🔴 실패
         return "partial"
     return "fail"
 
@@ -985,6 +1028,13 @@ header[data-testid="stHeader"] { background: transparent; }
 .sb-state { margin-left:auto; font-size:13px; font-weight:800; color:#24345c; white-space:nowrap; }
 .sb-progress { background:#e3e6ee; border-radius:6px; height:10px; overflow:hidden; margin:6px 0 4px; }
 .sb-progress > div { background:#f2b84b; height:100%; }
+.sb-log-title { font-weight:800; color:#24345c; margin:16px 0 6px; display:flex; justify-content:space-between; }
+.sb-log-title span { font-size:13px; color:#7a8199; font-weight:700; }
+.sb-log-empty { font-size:13px; color:#7a8199; background:#f5f6fa; border-radius:12px; padding:10px 12px; }
+.st-key-sblog { max-height: 260px; overflow-y: auto; gap: 6px !important; }
+.st-key-sblog button { justify-content:flex-start !important; text-align:left; border-radius:12px !important; background:#f5f6fa !important;
+                       border:1px solid #e3e6ef !important; padding:6px 10px !important; min-height:36px; }
+.st-key-sblog button p { font-size:13px !important; color:#24345c; white-space:normal; }
 .sb-rule { background:#f5f6fa; border-radius:14px; padding:12px 14px; color:#3d4566; font-size:13.5px; line-height:1.6; margin-top:10px; }
 </style>
 """
@@ -1155,7 +1205,9 @@ def init_state():
     ss.setdefault("current", "stage1")
     ss.setdefault("demo", False)
     ss.setdefault("error", None)
-    ss.setdefault("pending", None)     # 보냈지만 아직 AI 대답을 기다리는 메시지
+    ss.setdefault("pending", None)
+    ss.setdefault("log", [])           # 끝낸 판들의 기록 (스테이지를 옮겨도 남아요)
+    ss.setdefault("best_score", {})    # 스테이지별 최고 점수     # 보냈지만 아직 AI 대답을 기다리는 메시지
     if "game" not in ss:
         ss.game = new_game(ss.current)
 
@@ -1182,6 +1234,31 @@ def record_best(game):
     sid, res = game["stage_id"], game["result"]
     if RESULT_RANK[res] > RESULT_RANK.get(st.session_state.best.get(sid), -1):
         st.session_state.best[sid] = res
+    best_score = st.session_state.best_score
+    best_score[sid] = max(best_score.get(sid, 0), game["score"])
+    # 끝난 판을 통째로 저장해 두면, 나중에 기록에서 결과 화면을 다시 볼 수 있어요
+    st.session_state.log.append({"stage_id": sid, "time": now_hm(), "game": copy.deepcopy(game)})
+
+
+def update_logged_report(game):
+    """결과 화면에서 리포트를 다시 만들면, 기록에 저장된 판에도 반영해요."""
+    for entry in reversed(st.session_state.log):
+        g = entry["game"]
+        if g["stage_id"] == game["stage_id"] and g["history"] == game["history"]:
+            g["report"] = copy.deepcopy(game["report"])
+            break
+
+
+@st.dialog("📜 지난 기록", width="large")
+def show_record_dialog(index):
+    entry = st.session_state.log[index]
+    g = entry["game"]
+    st.caption(f"{entry['time']} · {STAGES[g['stage_id']]['title']}")
+    left, right = st.columns([1, 2.05], gap="medium")
+    left.markdown(result_left_html(g), unsafe_allow_html=True)
+    right.markdown(result_right_html(g), unsafe_allow_html=True)
+    with st.expander("💬 대화 다시 보기"):
+        st.markdown(chat_html(g), unsafe_allow_html=True)
 
 
 # ═════════════════════════════════════════════
@@ -1201,7 +1278,8 @@ def draw_sidebar():
             if not unlocked:
                 state, cls = "🔒 잠김", " lock"
             elif best.get(sid):
-                state, cls = s["endings"][best[sid]][0].split(" ", 1)[0] + " 완료", ""
+                emoji = s["endings"][best[sid]][0].split(" ", 1)[0]
+                state, cls = f"{emoji} 최고 {st.session_state.best_score.get(sid, 0)}점", ""
             else:
                 state, cls = "🔓 도전 가능", ""
             if sid == st.session_state.current:
@@ -1211,10 +1289,27 @@ def draw_sidebar():
                      f'<div class="sb-state">{state}</div></div>')
         st.markdown(rows, unsafe_allow_html=True)
         st.markdown('<div class="sb-rule">🎯 <b>규칙</b><br>5턴 안에 목표 점수를 넘기면 성공!<br>'
-                    '🟡 부분 성공 이상이면 다음 스테이지가 열려요.<br><br>💡 <b>공략 팁</b><br>'
+                    '🟡 <b>80점 이상</b>이면 다음 스테이지가 열려요.<br><br>💡 <b>공략 팁</b><br>'
                     '상대가 왜 망설이는지, <b>속마음</b>에서 힌트를 찾아보세요.</div>', unsafe_allow_html=True)
+        draw_log()
         st.write("")
         st.session_state.demo = st.toggle("🔓 시연 모드 (모든 스테이지 열기)", value=st.session_state.demo)
+
+
+def draw_log():
+    """사이드바의 '내 기록': 끝낸 판을 최신순으로 보여주고, 누르면 그 판의 결과를 다시 볼 수 있어요."""
+    log = st.session_state.log
+    st.markdown(f'<div class="sb-log-title">📜 내 기록 <span>{len(log)}판</span></div>', unsafe_allow_html=True)
+    if not log:
+        st.markdown('<div class="sb-log-empty">한 판을 끝내면 여기에 점수가 쌓여요.</div>', unsafe_allow_html=True)
+        return
+    with st.container(key="sblog"):
+        for i in range(len(log) - 1, -1, -1):
+            g = log[i]["game"]
+            emoji = STAGES[g["stage_id"]]["endings"][g["result"]][0].split(" ", 1)[0]
+            label = f"{emoji} {STAGES[g['stage_id']]['title']} · {g['score']}점 · {log[i]['time']}"
+            if st.button(label, key=f"log_{i}", width="stretch"):
+                show_record_dialog(i)
 
 
 def draw_topbar(game):
@@ -1303,7 +1398,7 @@ def draw_result(game):
         if nxt and is_unlocked(nxt):
             hint = f"🏆 다음 스테이지 <b>{STAGES[nxt]['title']}</b>가 열렸어요!"
         elif nxt:
-            hint = "🔒 🟡 이상을 받으면 다음 스테이지가 열려요. 다시 도전해 보세요!"
+            hint = "🔒 80점 이상(🟡)을 받아야 다음 스테이지가 열려요. 다시 도전해 보세요!"
         else:
             hint = "🎓 모든 스테이지를 끝냈어요. 수고했어요!"
         st.markdown(f'<div class="next-hint">{hint}</div>', unsafe_allow_html=True)
@@ -1314,6 +1409,7 @@ def draw_result(game):
             if b0.button("🔄 리포트 다시 만들기", key="remake_report", width="stretch"):
                 with st.spinner("리포트를 다시 만드는 중…"):
                     make_report(game)
+                    update_logged_report(game)
                 st.rerun()
         b1.button("↻ 다시 도전하기", key="retry", on_click=go_stage, args=(sid, True), width="stretch")
         if nxt and is_unlocked(nxt):
