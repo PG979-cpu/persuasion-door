@@ -10,6 +10,7 @@ import os
 import re
 import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -375,40 +376,69 @@ def friendly_error(e):
     return "⚠️ AI와 연결이 잠깐 끊겼어요. 같은 메시지를 다시 보내 주세요. (턴은 줄지 않았어요)"
 
 
-def ask_gemini_json(system_prompt, user_prompt, temperature, retries=2):
+def ask_gemini_json(system_prompt, user_prompt, temperature, retries=2, client=None):
     """Gemini에게 JSON으로 대답을 받아요.
     - 서버가 바쁘면(503 등) 2초, 4초 기다렸다가 같은 모델로 다시 시도해요.
     - 그래도 안 되거나 사용량 한도(429)에 걸리면 다른 Flash 모델로 바꿔서 시도해요.
     - 모든 모델이 사용량 한도에 걸렸으면 20초 기다렸다가 한 번 더 시도해요.
     - 전부 실패하면 마지막 오류를 넘겨서 화면에 한국어 안내가 나오게 해요."""
+    client = client or get_client()
     try:
-        return _ask_all_models(system_prompt, user_prompt, temperature, retries)
+        return _ask_all_models(system_prompt, user_prompt, temperature, retries, client)
     except Exception as e:
         if not is_rate_limit(e):
             raise
         print("[사용량 한도] 20초 기다렸다가 다시 시도해요.")
         time.sleep(20)
-        return _ask_all_models(system_prompt, user_prompt, temperature, retries=0)
+        return _ask_all_models(system_prompt, user_prompt, temperature, 0, client)
 
 
-def _ask_all_models(system_prompt, user_prompt, temperature, retries):
+# ── 속도 올리기: AI가 대답하기 전에 오래 '생각'하지 않게 해요 ──
+# 대화·채점은 깊은 추론이 필요 없어서, 생각 단계를 줄이면 대답이 훨씬 빨라져요.
+NO_FAST_THINKING = set()  # 이 설정을 받아 주지 않는 모델은 여기에 기록하고 기본값으로 불러요
+
+
+def fast_thinking(model):
+    if model in NO_FAST_THINKING:
+        return None
+    try:
+        if model.startswith("gemini-2.5"):
+            return types.ThinkingConfig(thinking_budget=0)
+        return types.ThinkingConfig(thinking_level="low")
+    except Exception:  # 설치된 라이브러리가 이 설정을 모르면 기본값 사용
+        NO_FAST_THINKING.add(model)
+        return None
+
+
+def _generate_json(client, model, system_prompt, user_prompt, temperature):
+    def config():
+        return types.GenerateContentConfig(
+            system_instruction=system_prompt,
+            temperature=temperature,
+            response_mime_type="application/json",
+            thinking_config=fast_thinking(model),
+        )
+    try:
+        res = client.models.generate_content(model=model, contents=user_prompt, config=config())
+    except Exception as e:
+        msg = str(e).lower()
+        if error_code(e) == 400 and model not in NO_FAST_THINKING and ("think" in msg or "budget" in msg):
+            NO_FAST_THINKING.add(model)  # 생각 줄이기를 지원 안 하는 모델 → 기본 설정으로 다시
+            res = client.models.generate_content(model=model, contents=user_prompt, config=config())
+        else:
+            raise
+    text = re.sub(r"^```(json)?|```$", "", (res.text or "").strip()).strip()
+    return json.loads(text)
+
+
+def _ask_all_models(system_prompt, user_prompt, temperature, retries, client):
     models = [MODEL] + [m for m in MODEL_CANDIDATES if m != MODEL]
     last_error = None
     for i, model in enumerate(models):
         attempts = retries + 1 if i == 0 else 1
         for attempt in range(attempts):
             try:
-                res = get_client().models.generate_content(
-                    model=model,
-                    contents=user_prompt,
-                    config=types.GenerateContentConfig(
-                        system_instruction=system_prompt,
-                        temperature=temperature,
-                        response_mime_type="application/json",
-                    ),
-                )
-                text = re.sub(r"^```(json)?|```$", "", (res.text or "").strip()).strip()
-                return json.loads(text)
+                return _generate_json(client, model, system_prompt, user_prompt, temperature)
             except json.JSONDecodeError as e:
                 last_error = e  # 형식이 깨졌으면 다시 시도
             except Exception as e:
@@ -432,7 +462,7 @@ def transcript(stage, history):
     return "\n".join(f"{who(h)}: {h['text']}" for h in history)
 
 
-def call_character(stage, history, user_msg, turn, ctx):
+def call_character(stage, history, user_msg, turn, ctx, client=None):
     """① 캐릭터: 대답 + 속마음 + 표정"""
     hidden = "\n- ".join(stage["hidden"])
     system = f"""너는 설득 연습 게임 속 캐릭터 '{stage['character']}'이다. 반드시 이 역할로만 대답한다.
@@ -456,13 +486,13 @@ def call_character(stage, history, user_msg, turn, ctx):
 [출력 형식] JSON만 출력:
 {{"reply": "대답", "inner_thought": "속마음 한 줄", "mood": "단호함|고민|수긍"}}"""
     prompt = f"[지금까지 대화]\n{transcript(stage, history)}\n\n[사용자의 새 발언]\n{user_msg}"
-    out = ask_gemini_json(system, prompt, temperature=0.8)
+    out = ask_gemini_json(system, prompt, temperature=0.8, client=client)
     if out.get("mood") not in MOODS:
         out["mood"] = "고민"
     return out
 
 
-def call_judge(stage, history, user_msg, ctx):
+def call_judge(stage, history, user_msg, ctx, client=None):
     """② 심판: 항목별 점수 + 한 줄 평가 + 사용자 톤/전략"""
     crit = "\n".join(f"- {k}: {v[0]} (0~5점)" for k, v in stage["criteria"].items())
     shots = "\n".join(f"발언: {ex}\n점수: {json.dumps(sc, ensure_ascii=False)}" for ex, sc in stage["examples"])
@@ -486,7 +516,7 @@ def call_judge(stage, history, user_msg, ctx):
 [출력 형식] JSON만 출력:
 {{"scores": {{{score_keys}}}, "comment": "25자 내외 한 줄 평가", "user_tone": "...", "strategy": "..."}}"""
     prompt = f"[지금까지 대화]\n{transcript(stage, history)}\n\n[채점할 사용자 발언]\n{user_msg}"
-    out = ask_gemini_json(system, prompt, temperature=0.1)
+    out = ask_gemini_json(system, prompt, temperature=0.1, client=client)
     scores = {}
     for k in stage["criteria"]:
         try:
@@ -572,8 +602,12 @@ def play_turn(game, user_msg):
     stage = STAGES[game["stage_id"]]
     turn = game["turn"] + 1
     ctx = stage_context(game["stage_id"])
-    char = call_character(stage, game["history"], user_msg, turn, ctx)
-    judge = call_judge(stage, game["history"], user_msg, ctx)
+    # 캐릭터 대답과 심판 채점은 서로 기다릴 필요가 없어서 동시에 불러요 (대기 시간 약 절반)
+    client = get_client()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        f_char = pool.submit(call_character, stage, game["history"], user_msg, turn, ctx, client)
+        f_judge = pool.submit(call_judge, stage, game["history"], user_msg, ctx, client)
+        char, judge = f_char.result(), f_judge.result()
 
     turn_score = round(sum(judge["scores"][k] * w for k, (_, w) in stage["criteria"].items()) * SCORE_SCALE)
     game["score"] = min(stage["goal_score"], game["score"] + turn_score)
