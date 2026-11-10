@@ -379,7 +379,19 @@ def ask_gemini_json(system_prompt, user_prompt, temperature, retries=2):
     """Gemini에게 JSON으로 대답을 받아요.
     - 서버가 바쁘면(503 등) 2초, 4초 기다렸다가 같은 모델로 다시 시도해요.
     - 그래도 안 되거나 사용량 한도(429)에 걸리면 다른 Flash 모델로 바꿔서 시도해요.
+    - 모든 모델이 사용량 한도에 걸렸으면 20초 기다렸다가 한 번 더 시도해요.
     - 전부 실패하면 마지막 오류를 넘겨서 화면에 한국어 안내가 나오게 해요."""
+    try:
+        return _ask_all_models(system_prompt, user_prompt, temperature, retries)
+    except Exception as e:
+        if not is_rate_limit(e):
+            raise
+        print("[사용량 한도] 20초 기다렸다가 다시 시도해요.")
+        time.sleep(20)
+        return _ask_all_models(system_prompt, user_prompt, temperature, retries=0)
+
+
+def _ask_all_models(system_prompt, user_prompt, temperature, retries):
     models = [MODEL] + [m for m in MODEL_CANDIDATES if m != MODEL]
     last_error = None
     for i, model in enumerate(models):
@@ -508,7 +520,26 @@ def call_report(stage, game, result_label, ctx):
  "after": "그 발언을 더 낫게 고친 예시"}"""
     prompt = (f"[상황] {ctx}\n[목표] {stage['goal']}\n[결과] {result_label}\n\n"
               f"[대화]\n{transcript(stage, game['history'])}\n\n[턴별 기록]\n{rec_text}")
-    return ask_gemini_json(system, prompt, temperature=0.4)
+    out = ask_gemini_json(system, prompt, temperature=0.4)
+    if isinstance(out, list) and out and isinstance(out[0], dict):
+        out = out[0]  # 가끔 [{...}] 처럼 목록으로 감싸서 줄 때가 있어요
+    if not isinstance(out, dict) or not out.get("one_line"):
+        raise ValueError("리포트 형식이 올바르지 않아요")
+    return out
+
+
+REPORT_FAILED = "(AI가 바빠서 리포트를 만들지 못했어요. 아래 '리포트 다시 만들기'를 눌러 주세요.)"
+
+
+def make_report(game):
+    """게임이 끝난 뒤 리포트를 만들어 game에 넣어요. 실패하면 다시 만들 수 있게 표시해 둬요."""
+    stage = STAGES[game["stage_id"]]
+    try:
+        game["report"] = call_report(stage, game, stage["endings"][game["result"]][0],
+                                     stage_context(game["stage_id"]))
+    except Exception as e:
+        print(f"[리포트 오류] {type(e).__name__}: {str(e)[:200]}")
+        game["report"] = {"failed": True, "one_line": REPORT_FAILED}
 
 
 # ═════════════════════════════════════════════
@@ -560,11 +591,7 @@ def play_turn(game, user_msg):
     if game["score"] >= stage["goal_score"] or turn >= MAX_TURNS:
         game["done"] = True
         game["result"] = judge_result(stage, game["score"])
-        try:
-            game["report"] = call_report(stage, game, stage["endings"][game["result"]][0], ctx)
-        except Exception as e:
-            print(f"[리포트 오류] {str(e)[:200]}")
-            game["report"] = {"one_line": "(AI가 바빠서 리포트를 만들지 못했어요. 결과와 점수는 그대로 저장됐어요.)"}
+        make_report(game)
     return game
 
 
@@ -1137,6 +1164,11 @@ def draw_result(game):
     with right:
         st.markdown(result_right_html(game), unsafe_allow_html=True)
         b0, b1, b2 = st.columns([1.6, 1, 1])
+        if (game.get("report") or {}).get("failed"):
+            if b0.button("🔄 리포트 다시 만들기", key="remake_report", width="stretch"):
+                with st.spinner("리포트를 다시 만드는 중…"):
+                    make_report(game)
+                st.rerun()
         b1.button("↻ 다시 도전하기", key="retry", on_click=go_stage, args=(sid, True), width="stretch")
         if nxt and is_unlocked(nxt):
             b2.button("다음 스테이지 →", key="next", on_click=go_stage, args=(nxt,), width="stretch")
